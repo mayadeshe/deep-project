@@ -5,7 +5,7 @@
 #   conda activate inpainting-env
 #
 # Usage:
-#   python inpaint.py --image photo.jpg --mask mask.png --prompt "a wooden bench" --output result.png
+#   python inpaint.py --image photo.jpg --mask mask.png --prompt "a wooden bench" --output vase_result.png
 #
 # Requirements (if installing manually with pip):
 #   pip install diffusers==0.25.0 transformers==4.36.0 accelerate==0.25.0 torch==2.1.0 torchvision==0.16.0 Pillow==10.1.0
@@ -19,7 +19,7 @@ from diffusers import StableDiffusionInpaintPipeline
 def load_model(device: str) -> StableDiffusionInpaintPipeline:
     """Load StableDiffusion 2 base inpainting pipeline onto the given device."""
     pipe = StableDiffusionInpaintPipeline.from_pretrained(
-        "stabilityai/stable-diffusion-2-base",
+        "runwayml/stable-diffusion-inpainting",
         torch_dtype=torch.float32,  # float16 is unreliable on MPS
         safety_checker=None,        # disabled to reduce RAM usage
     )
@@ -84,7 +84,7 @@ def main():
     parser.add_argument("--image", required=True, help="Path to input image")
     parser.add_argument("--mask", required=True, help="Path to mask image (white = inpaint region)")
     parser.add_argument("--prompt", required=True, help="Text prompt describing the inpainted region")
-    parser.add_argument("--output", default="output.png", help="Output file path (default: output.png)")
+    parser.add_argument("--output", default="output_vanila/vase_result.png", help="Output file path (default: output_vanila/vase_result.png)")
     parser.add_argument("--seed", type=int, default=42, help="Random seed for reproducibility (default: 42)")
     parser.add_argument("--steps", type=int, default=50, help="Number of denoising steps (default: 50)")
     parser.add_argument(

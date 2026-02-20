@@ -1,43 +1,23 @@
-# Diffusion-Based Inpainting
-#
-# Setup (conda):
-#   conda env create -f environment.yaml
-#   conda activate inpainting-env
-#
-# Usage:
-#   python inpaint.py --image photo.jpg --mask mask.png --prompt "a wooden bench" --output vase_result.png
-#
-# Requirements (if installing manually with pip):
-#   pip install diffusers==0.25.0 transformers==4.36.0 accelerate==0.25.0 torch==2.1.0 torchvision==0.16.0 Pillow==10.1.0
-
 import argparse
 import torch
+import os
 from PIL import Image
 from diffusers import StableDiffusionInpaintPipeline
 
-
 def load_model(device: str) -> StableDiffusionInpaintPipeline:
-    """Load StableDiffusion 2 base inpainting pipeline onto the given device."""
+    """Load StableDiffusion 2 base into an inpainting pipeline."""
+    model_id = "sd2-community/stable-diffusion-2-base"
+
     pipe = StableDiffusionInpaintPipeline.from_pretrained(
-        "runwayml/stable-diffusion-inpainting",
-        torch_dtype=torch.float32,  # float16 is unreliable on MPS
-        safety_checker=None,        # disabled to reduce RAM usage
+        model_id,
+        torch_dtype=torch.float32,
+        use_auth_token=True,
+        safety_checker=None,
     )
     pipe = pipe.to(device)
     return pipe
 
-
 def preprocess_inputs(image_path: str, mask_path: str, target_size=(512, 512)):
-    """
-    Load and resize image and mask to target_size.
-
-    - Image is resized with LANCZOS (high-quality downsampling).
-    - Mask is resized with NEAREST (preserves hard binary edges, avoids gray fringe).
-    - Mask is converted to RGB as required by StableDiffusionInpaintPipeline.
-
-    Returns:
-        (image_rgb, mask_rgb): tuple of PIL Images
-    """
     image = Image.open(image_path).convert("RGB")
     mask = Image.open(mask_path).convert("L")
 
@@ -45,9 +25,7 @@ def preprocess_inputs(image_path: str, mask_path: str, target_size=(512, 512)):
     mask = mask.resize(target_size, Image.NEAREST)
 
     mask_rgb = mask.convert("RGB")
-
     return image, mask_rgb
-
 
 def run_inpainting(
     pipe: StableDiffusionInpaintPipeline,
@@ -58,47 +36,36 @@ def run_inpainting(
     steps: int,
     guidance_scale: float,
 ) -> Image.Image:
-    """
-    Run inpainting inference.
-
-    The generator is created on the same device as the pipeline to avoid
-    device mismatch errors on MPS.
-    """
     generator = torch.Generator(device=pipe.device).manual_seed(seed)
 
+    # כאן השמות חייבים להתאים למה ש-InpaintPipeline מצפה
     result = pipe(
         prompt=prompt,
-        image=image,
-        mask_image=mask,
+        image=image,            # התמונה המקורית
+        mask_image=mask,        # המסכה
         num_inference_steps=steps,
         guidance_scale=guidance_scale,
         generator=generator,
     )
     return result.images[0]
 
-
 def main():
-    parser = argparse.ArgumentParser(
-        description="Text-conditioned inpainting with Stable Diffusion 2 base (MPS/CPU)"
-    )
-    parser.add_argument("--image", required=True, help="Path to input image")
-    parser.add_argument("--mask", required=True, help="Path to mask image (white = inpaint region)")
-    parser.add_argument("--prompt", required=True, help="Text prompt describing the inpainted region")
-    parser.add_argument("--output", default="output_vanila/vase_result.png", help="Output file path (default: output_vanila/vase_result.png)")
-    parser.add_argument("--seed", type=int, default=42, help="Random seed for reproducibility (default: 42)")
-    parser.add_argument("--steps", type=int, default=50, help="Number of denoising steps (default: 50)")
-    parser.add_argument(
-        "--guidance-scale",
-        type=float,
-        default=7.5,
-        help="Classifier-free guidance scale (default: 7.5)",
-    )
+    parser = argparse.ArgumentParser(description="Inpainting with SD2 Base")
+    parser.add_argument("--image", required=True)
+    parser.add_argument("--mask", required=True)
+    parser.add_argument("--prompt", required=True)
+    parser.add_argument("--output", default="output_vanila/vase_result.png")
+    parser.add_argument("--seed", type=int, default=42)
+    parser.add_argument("--steps", type=int, default=50)
+    parser.add_argument("--guidance-scale", type=float, default=7.5)
     args = parser.parse_args()
 
-    if torch.backends.mps.is_available():
-        device = "mps"
-    else:
-        device = "cpu"
+    # יצירת תיקיית פלט אם היא לא קיימת
+    output_dir = os.path.dirname(args.output)
+    if output_dir and not os.path.exists(output_dir):
+        os.makedirs(output_dir)
+
+    device = "mps" if torch.backends.mps.is_available() else "cpu"
     print(f"Using device: {device}")
 
     print("Loading model...")
@@ -107,20 +74,11 @@ def main():
     print("Preprocessing inputs...")
     image, mask = preprocess_inputs(args.image, args.mask)
 
-    print(f"Running inpainting (steps={args.steps}, guidance_scale={args.guidance_scale}, seed={args.seed})...")
-    result = run_inpainting(
-        pipe=pipe,
-        image=image,
-        mask=mask,
-        prompt=args.prompt,
-        seed=args.seed,
-        steps=args.steps,
-        guidance_scale=args.guidance_scale,
-    )
+    print(f"Running inpainting (steps={args.steps})...")
+    result = run_inpainting(pipe, image, mask, args.prompt, args.seed, args.steps, args.guidance_scale)
 
     result.save(args.output)
     print(f"Saved result to: {args.output}")
-
 
 if __name__ == "__main__":
     main()

@@ -38,11 +38,10 @@ def run_inpainting(
 ) -> Image.Image:
     generator = torch.Generator(device=pipe.device).manual_seed(seed)
 
-    # כאן השמות חייבים להתאים למה ש-InpaintPipeline מצפה
     result = pipe(
         prompt=prompt,
-        image=image,            # התמונה המקורית
-        mask_image=mask,        # המסכה
+        image=image,
+        mask_image=mask,
         num_inference_steps=steps,
         guidance_scale=guidance_scale,
         generator=generator,
@@ -60,7 +59,6 @@ def main():
     parser.add_argument("--guidance-scale", type=float, default=7.5)
     args = parser.parse_args()
 
-    # יצירת תיקיית פלט אם היא לא קיימת
     output_dir = os.path.dirname(args.output)
     if output_dir and not os.path.exists(output_dir):
         os.makedirs(output_dir)

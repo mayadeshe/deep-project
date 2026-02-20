@@ -1,0 +1,16 @@
+name: inpainting-env
+channels:
+  - pytorch
+  - conda-forge
+  - defaults
+dependencies:
+  - python=3.10
+  - pip
+  - pytorch=2.1.0
+  - torchvision=0.16.0
+  - numpy=1.26.2
+  - pillow=10.1.0
+  - pip:
+    - diffusers==0.25.0
+    - transformers==4.36.0
+    - accelerate==0.25.0

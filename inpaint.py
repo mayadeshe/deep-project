@@ -53,21 +53,16 @@ def main():
     parser.add_argument("--image", required=True)
     parser.add_argument("--mask", required=True)
     parser.add_argument("--prompt", required=True)
-    # נשאיר את output כתיקייה כברירת מחדל
     parser.add_argument("--output_dir", default="output_vanila")
     parser.add_argument("--seed", type=int, default=42)
     parser.add_argument("--steps", type=int, default=50)
     parser.add_argument("--guidance-scale", type=float, default=7.5)
     args = parser.parse_args()
 
-    # יצירת שם קובץ מתוך הפרומפט
-    # ננקה תווים שעלולים להיות בעייתיים בשמות קבצים (כמו רווחים או סימני פיסוק)
     clean_prompt = "".join([c if c.isalnum() else "_" for c in args.prompt])
-    # נגביל את האורך כדי שלא יהיה שם קובץ ארוך מדי
     filename = f"{clean_prompt[:50]}_seed{args.seed}.png"
     full_output_path = os.path.join(args.output_dir, filename)
 
-    # יצירת תיקיית פלט אם היא לא קיימת
     if not os.path.exists(args.output_dir):
         os.makedirs(args.output_dir)
 
@@ -83,7 +78,6 @@ def main():
     print(f"Running inpainting for prompt: '{args.prompt}'")
     result = run_inpainting(pipe, image, mask, args.prompt, args.seed, args.steps, args.guidance_scale)
 
-    # שמירה לנתיב החדש שיצרנו מהפרומפט
     result.save(full_output_path)
     print(f"Saved result to: {full_output_path}")
 

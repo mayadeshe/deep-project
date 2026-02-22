@@ -14,6 +14,7 @@ def load_model(device: str) -> StableDiffusionInpaintPipeline:
         use_auth_token=True,
         safety_checker=None,
     )
+    print(pipe)
     pipe = pipe.to(device)
     return pipe
 

@@ -7,6 +7,24 @@ from PIL import Image
 from diffusers import StableDiffusionPipeline, DDPMScheduler
 
 
+# ---------------------------------------------------------
+# Model loading
+# ---------------------------------------------------------
+def load_layered_model(device: str):
+    model_id = "sd2-community/stable-diffusion-2-base"
+
+    pipe = StableDiffusionPipeline.from_pretrained(
+        model_id,
+        torch_dtype=torch.float32,
+        safety_checker=None,
+    )
+    pipe.scheduler = DDPMScheduler.from_config(pipe.scheduler.config)
+    pipe = pipe.to(device)
+    pipe.enable_attention_slicing()
+    pipe.set_progress_bar_config(disable=False)
+    return pipe
+
+
 @torch.no_grad()
 def layered_ddpm_inpaint(
         pipe,
@@ -135,16 +153,7 @@ def main():
     print(f"Using device: {device}")
 
     print("Loading diffusion model...")
-    model_id = "sd2-community/stable-diffusion-2-base"
-    pipe = StableDiffusionPipeline.from_pretrained(
-        model_id,
-        torch_dtype=torch.float32,
-        safety_checker=None,
-    )
-    pipe.scheduler = DDPMScheduler.from_config(pipe.scheduler.config)
-    pipe = pipe.to(device)
-    pipe.enable_attention_slicing()
-    pipe.set_progress_bar_config(disable=False)
+    pipe = load_layered_model(device)
 
     print("Preprocessing inputs...")
     image, mask = preprocess_inputs(args.image, args.mask)

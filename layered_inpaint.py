@@ -43,6 +43,9 @@ def layered_ddpm_inpaint(
     image_tensor = pipe.image_processor.preprocess(image).to(device)
     mask = mask.to(device)
 
+    # Mask out the inpaint region before encoding so the VAE never sees those pixels
+    image_tensor = image_tensor * mask
+
     # Encode image to latent
     known_latents = pipe.vae.encode(image_tensor).latent_dist.sample(generator)
     known_latents *= pipe.vae.config.scaling_factor
@@ -87,7 +90,7 @@ def layered_ddpm_inpaint(
     if isinstance(guidance_scale_per_layer, float):
         guidance_scale_per_layer = [guidance_scale_per_layer] * num_layers
 
-    # Downsample mask to latent resolution
+    # Downsample mask to latent resolution (tracks all "known" pixels, grows each layer)
     completed_mask = torch.nn.functional.interpolate(
         mask.clone(), size=known_latents.shape[-2:], mode="nearest"
     )
@@ -118,7 +121,8 @@ def layered_ddpm_inpaint(
 
             latents = pipe.scheduler.step(noise_pred, t, latents).prev_sample
 
-        # Update completed mask
+        # Absorb completed layer into known_latents so inner layers treat it as context
+        known_latents = completed_mask * known_latents + layer_mask * latents
         completed_mask = torch.clamp(completed_mask + layer_mask, 0.0, 1.0)
 
     latents /= pipe.vae.config.scaling_factor
@@ -129,8 +133,19 @@ def layered_ddpm_inpaint(
 
 def preprocess_inputs(image_path, mask_path, size=(512, 512)):
     image = Image.open(image_path).convert("RGB").resize(size, Image.LANCZOS)
-    mask = Image.open(mask_path).convert("L").resize(size, Image.NEAREST)
-    mask = torch.from_numpy((np.array(mask) > 127).astype(np.float32)).unsqueeze(0).unsqueeze(0)
+    if mask_path.endswith(".pt"):
+        mask_tensor = torch.load(mask_path, map_location="cpu").float()
+        # Normalize to [0,1] if needed, then threshold
+        if mask_tensor.max() > 1.0:
+            mask_tensor = mask_tensor / 255.0
+        # Ensure shape is (1, 1, H, W)
+        while mask_tensor.dim() < 4:
+            mask_tensor = mask_tensor.unsqueeze(0)
+        mask = torch.nn.functional.interpolate(mask_tensor, size=size[::-1], mode="nearest")
+        mask = (mask > 0.5).float()
+    else:
+        mask = Image.open(mask_path).convert("L").resize(size, Image.NEAREST)
+        mask = torch.from_numpy((np.array(mask) > 127).astype(np.float32)).unsqueeze(0).unsqueeze(0)
     return image, mask
 
 
@@ -140,7 +155,7 @@ def main():
     parser.add_argument("--mask", required=True)
     parser.add_argument("--prompt", required=True)
     parser.add_argument("--output_dir", default="output_layered_ddpm")
-    parser.add_argument("--num_layers", type=int, default=8)
+    parser.add_argument("--num_layers", type=int, default=4)
     parser.add_argument("--steps_per_layer", type=str, default="15",
                         help="Comma-separated list of steps per layer")
     parser.add_argument("--guidance_scale_per_layer", type=str, default="7.5",

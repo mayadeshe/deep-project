@@ -35,12 +35,22 @@ def load_vanilla_model(device: str) -> StableDiffusionPipeline:
 # ---------------------------------------------------------
 def preprocess_inputs(image_path, mask_path, size=(512, 512)):
     image = Image.open(image_path).convert("RGB").resize(size, Image.LANCZOS)
-    mask = Image.open(mask_path).convert("L").resize(size, Image.NEAREST)
-
-    # mask: 1 = keep, 0 = inpaint
-    mask = torch.from_numpy(
-        (np.array(mask) > 127).astype(np.float32)
-    ).unsqueeze(0).unsqueeze(0)
+    if mask_path.endswith(".pt"):
+        mask_tensor = torch.load(mask_path, map_location="cpu").float()
+        # Normalize to [0,1] if needed, then threshold
+        if mask_tensor.max() > 1.0:
+            mask_tensor = mask_tensor / 255.0
+        # Ensure shape is (1, 1, H, W)
+        while mask_tensor.dim() < 4:
+            mask_tensor = mask_tensor.unsqueeze(0)
+        mask = torch.nn.functional.interpolate(mask_tensor, size=size[::-1], mode="nearest")
+        mask = (mask > 0.5).float()
+    else:
+        mask = Image.open(mask_path).convert("L").resize(size, Image.NEAREST)
+        # mask: 1 = keep, 0 = inpaint
+        mask = torch.from_numpy(
+            (np.array(mask) > 127).astype(np.float32)
+        ).unsqueeze(0).unsqueeze(0)
 
     return image, mask
 
@@ -50,29 +60,29 @@ def preprocess_inputs(image_path, mask_path, size=(512, 512)):
 # ---------------------------------------------------------
 @torch.no_grad()
 def ddpm_inpaint(
-    pipe,
-    image: Image.Image,
-    mask: torch.Tensor,
-    prompt: str,
-    steps: int,
-    guidance_scale: float,
-    seed: int,
+        pipe,
+        image: Image.Image,
+        mask: torch.Tensor,
+        prompt: str,
+        steps: int,
+        guidance_scale: float,
+        seed: int,
 ):
     device = pipe.device
     generator = torch.Generator(device).manual_seed(seed)
 
-    # Encode image to latent space
+    #Prepare
     image_tensor = pipe.image_processor.preprocess(image).to(device)
     mask = mask.to(device)
+    image_tensor = image_tensor * mask
 
-    with torch.no_grad():
-        known_latents = pipe.vae.encode(image_tensor).latent_dist.sample(generator)
-        known_latents *= pipe.vae.config.scaling_factor
+    known_latents = pipe.vae.encode(image_tensor).latent_dist.sample(generator)
+    known_latents *= pipe.vae.config.scaling_factor
 
     # Downsample mask to latent resolution
     mask = torch.nn.functional.interpolate(mask, size=known_latents.shape[2:], mode="nearest")
 
-    # Initial noise
+    # Initial pure noise for the very first step
     latents = torch.randn(known_latents.shape, generator=generator, device=device, dtype=known_latents.dtype)
 
     # Text embeddings
@@ -82,45 +92,34 @@ def ddpm_inpaint(
         num_images_per_prompt=1,
         do_classifier_free_guidance=True,
     )
-    # Concatenate [uncond, cond] to match the doubled latent_input below
     text_embeddings = torch.cat([negative_prompt_embeds, prompt_embeds])
 
     pipe.scheduler.set_timesteps(steps)
 
     for t in pipe.scheduler.timesteps:
-        # Forward-diffuse known region
-        noise = torch.randn(
-            known_latents.shape,
-            device=known_latents.device,
-            dtype=known_latents.dtype,
-        )
-        alpha_bar = pipe.scheduler.alphas_cumprod[t]
-        sqrt_alpha_bar = alpha_bar.sqrt()
-        sqrt_one_minus_alpha_bar = (1.0 - alpha_bar).sqrt()
-        noisy_known = (
-            sqrt_alpha_bar * known_latents
-            + sqrt_one_minus_alpha_bar * noise
-        )
 
-        # Clamp known pixels
-        latents = mask * noisy_known + (1 - mask) * latents
+        # Clamp known region at noise level t
+        noise = torch.randn(known_latents.shape, generator=generator, device=device, dtype=known_latents.dtype)
+        noisy_known = pipe.scheduler.add_noise(known_latents, noise, t)
+        latents = (mask * noisy_known) + ((1 - mask) * latents)
 
-        # Classifier-free guidance
+        # Predict noise
         latent_input = torch.cat([latents] * 2)
-
-        noise_pred = pipe.unet(
-            latent_input,
-            t,
-            encoder_hidden_states=text_embeddings,
-        ).sample
-
+        noise_pred = pipe.unet(latent_input, t, encoder_hidden_states=text_embeddings).sample
         noise_uncond, noise_text = noise_pred.chunk(2)
         noise_pred = noise_uncond + guidance_scale * (noise_text - noise_uncond)
 
-        # Reverse DDPM step
+        # Reverse sample
         latents = pipe.scheduler.step(noise_pred, t, latents).prev_sample
 
-    # Decode
+        # Clamp again at noise level t-1
+        noise = torch.randn(known_latents.shape, generator=generator, device=device, dtype=known_latents.dtype)
+        noisy_known = pipe.scheduler.add_noise(known_latents, noise, t-1)
+        latents = (mask * noisy_known) + ((1 - mask) * latents)
+
+    latents = (mask * known_latents) + ((1 - mask) * latents)
+
+    # Decode the latents
     latents /= pipe.vae.config.scaling_factor
     image = pipe.vae.decode(latents).sample
     image = pipe.image_processor.postprocess(image)[0]
@@ -129,7 +128,7 @@ def ddpm_inpaint(
 
 
 # ---------------------------------------------------------
-# CLI
+# CLI SCRIPT
 # ---------------------------------------------------------
 def main():
     parser = argparse.ArgumentParser("Vanilla DDPM Inpainting")

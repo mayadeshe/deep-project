@@ -1,58 +1,9 @@
 import argparse
 import os
-import numpy as np
 import torch
 from PIL import Image
 
-from diffusers import StableDiffusionPipeline
-from diffusers.schedulers import DDIMScheduler
-
-
-# ---------------------------------------------------------
-# Model loading
-# ---------------------------------------------------------
-def load_vanilla_model(device: str) -> StableDiffusionPipeline:
-    model_id = "sd2-community/stable-diffusion-2-base"
-
-    pipe = StableDiffusionPipeline.from_pretrained(
-        model_id,
-        torch_dtype=torch.float32,
-        safety_checker=None,
-        use_auth_token=True,
-    )
-
-    # DDIM used only as a convenient DDPM-style scheduler
-    pipe.scheduler = DDIMScheduler.from_config(pipe.scheduler.config)
-
-    pipe = pipe.to(device)
-    pipe.enable_attention_slicing()
-    pipe.set_progress_bar_config(disable=False)
-    return pipe
-
-
-# ---------------------------------------------------------
-# Preprocessing
-# ---------------------------------------------------------
-def preprocess_inputs(image_path, mask_path, size=(512, 512)):
-    image = Image.open(image_path).convert("RGB").resize(size, Image.LANCZOS)
-    if mask_path.endswith(".pt"):
-        mask_tensor = torch.load(mask_path, map_location="cpu").float()
-        # Normalize to [0,1] if needed, then threshold
-        if mask_tensor.max() > 1.0:
-            mask_tensor = mask_tensor / 255.0
-        # Ensure shape is (1, 1, H, W)
-        while mask_tensor.dim() < 4:
-            mask_tensor = mask_tensor.unsqueeze(0)
-        mask = torch.nn.functional.interpolate(mask_tensor, size=size[::-1], mode="nearest")
-        mask = (mask > 0.5).float()
-    else:
-        mask = Image.open(mask_path).convert("L").resize(size, Image.NEAREST)
-        # mask: 1 = keep, 0 = inpaint
-        mask = torch.from_numpy(
-            (np.array(mask) > 127).astype(np.float32)
-        ).unsqueeze(0).unsqueeze(0)
-
-    return image, mask
+from pipeutils import preprocess_inputs, load_sd_pipeline
 
 
 # ---------------------------------------------------------
@@ -147,7 +98,7 @@ def main():
     print(f"Using device: {device}")
 
     print("Loading vanilla diffusion model...")
-    pipe = load_vanilla_model(device)
+    pipe = load_sd_pipeline(device)
 
     print("Preprocessing inputs...")
     image, mask = preprocess_inputs(args.image, args.mask)
@@ -163,10 +114,8 @@ def main():
         seed=args.seed,
     )
 
-    out_name = f"inpaint_seed{args.seed}.png"
-    out_path = os.path.join(args.output_dir, out_name)
+    out_path = os.path.join(args.output_dir, f"inpaint_seed{args.seed}.png")
     result.save(out_path)
-
     print(f"Saved result to: {out_path}")
 
 

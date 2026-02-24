@@ -4,25 +4,8 @@ import torch
 import numpy as np
 import scipy.ndimage as ndi
 from PIL import Image
-from diffusers import StableDiffusionPipeline, DDPMScheduler
 
-
-# ---------------------------------------------------------
-# Model loading
-# ---------------------------------------------------------
-def load_layered_model(device: str):
-    model_id = "sd2-community/stable-diffusion-2-base"
-
-    pipe = StableDiffusionPipeline.from_pretrained(
-        model_id,
-        torch_dtype=torch.float32,
-        safety_checker=None,
-    )
-    pipe.scheduler = DDPMScheduler.from_config(pipe.scheduler.config)
-    pipe = pipe.to(device)
-    pipe.enable_attention_slicing()
-    pipe.set_progress_bar_config(disable=False)
-    return pipe
+from pipeutils import preprocess_inputs, load_sd_pipeline
 
 
 @torch.no_grad()
@@ -101,25 +84,23 @@ def layered_ddpm_inpaint(
         timesteps = pipe.scheduler.timesteps
 
         for t in timesteps:
-            noise = torch.randn_like(known_latents)
-            alpha_bar = pipe.scheduler.alphas_cumprod[t]
-            sqrt_alpha_bar = alpha_bar.sqrt()
-            sqrt_one_minus_alpha_bar = (1.0 - alpha_bar).sqrt()
-            noisy_known = sqrt_alpha_bar * known_latents + sqrt_one_minus_alpha_bar * noise
-
+            # Composite known region at noise level t (before UNet step)
+            noise = torch.randn(known_latents.shape, generator=generator, device=device, dtype=known_latents.dtype)
+            noisy_known = pipe.scheduler.add_noise(known_latents, noise, t)
             effective_mask = torch.clamp(completed_mask, 0.0, 1.0)
             latents = effective_mask * noisy_known + (1 - effective_mask) * latents
 
             latent_input = torch.cat([latents] * 2)
-            noise_pred = pipe.unet(
-                latent_input,
-                t,
-                encoder_hidden_states=text_embeddings,
-            ).sample
+            noise_pred = pipe.unet(latent_input, t, encoder_hidden_states=text_embeddings).sample
             noise_uncond, noise_text = noise_pred.chunk(2)
             noise_pred = noise_uncond + guidance_scale_per_layer[idx] * (noise_text - noise_uncond)
 
             latents = pipe.scheduler.step(noise_pred, t, latents).prev_sample
+
+            # Composite known region at noise level t-1 (after UNet step)
+            noise = torch.randn(known_latents.shape, generator=generator, device=device, dtype=known_latents.dtype)
+            noisy_known = pipe.scheduler.add_noise(known_latents, noise, t - 1)
+            latents = effective_mask * noisy_known + (1 - effective_mask) * latents
 
         # Absorb completed layer into known_latents so inner layers treat it as context
         known_latents = completed_mask * known_latents + layer_mask * latents
@@ -131,24 +112,9 @@ def layered_ddpm_inpaint(
     return out_image
 
 
-def preprocess_inputs(image_path, mask_path, size=(512, 512)):
-    image = Image.open(image_path).convert("RGB").resize(size, Image.LANCZOS)
-    if mask_path.endswith(".pt"):
-        mask_tensor = torch.load(mask_path, map_location="cpu").float()
-        # Normalize to [0,1] if needed, then threshold
-        if mask_tensor.max() > 1.0:
-            mask_tensor = mask_tensor / 255.0
-        # Ensure shape is (1, 1, H, W)
-        while mask_tensor.dim() < 4:
-            mask_tensor = mask_tensor.unsqueeze(0)
-        mask = torch.nn.functional.interpolate(mask_tensor, size=size[::-1], mode="nearest")
-        mask = (mask > 0.5).float()
-    else:
-        mask = Image.open(mask_path).convert("L").resize(size, Image.NEAREST)
-        mask = torch.from_numpy((np.array(mask) > 127).astype(np.float32)).unsqueeze(0).unsqueeze(0)
-    return image, mask
-
-
+# ---------------------------------------------------------
+# CLI
+# ---------------------------------------------------------
 def main():
     parser = argparse.ArgumentParser("Layered DDPM Inpainting")
     parser.add_argument("--image", required=True)
@@ -168,12 +134,11 @@ def main():
     print(f"Using device: {device}")
 
     print("Loading diffusion model...")
-    pipe = load_layered_model(device)
+    pipe = load_sd_pipeline(device)
 
     print("Preprocessing inputs...")
     image, mask = preprocess_inputs(args.image, args.mask)
 
-    # Parse per-layer lists
     steps_per_layer = [int(x) for x in args.steps_per_layer.split(",")]
     guidance_per_layer = [float(x) for x in args.guidance_scale_per_layer.split(",")]
 
@@ -191,7 +156,7 @@ def main():
         num_layers=args.num_layers,
         steps_per_layer=steps_per_layer,
         guidance_scale_per_layer=guidance_per_layer,
-        seed=args.seed
+        seed=args.seed,
     )
 
     out_path = os.path.join(args.output_dir, f"layered_inpaint_seed{args.seed}.png")

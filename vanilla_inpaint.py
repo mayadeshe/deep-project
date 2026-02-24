@@ -8,7 +8,8 @@ from pipeutils import preprocess_inputs, load_sd_pipeline
 
 # ---------------------------------------------------------
 # Vanilla DDPM inpainting sampler
-# ---------------------------------------------------------
+# --------------------------------------------------------
+
 @torch.no_grad()
 def ddpm_inpaint(
         pipe,
@@ -22,11 +23,12 @@ def ddpm_inpaint(
     device = pipe.device
     generator = torch.Generator(device).manual_seed(seed)
 
-    #Prepare
+    #Prepare masked image
     image_tensor = pipe.image_processor.preprocess(image).to(device)
     mask = mask.to(device)
     image_tensor = image_tensor * mask
 
+    #Encode
     known_latents = pipe.vae.encode(image_tensor).latent_dist.sample(generator)
     known_latents *= pipe.vae.config.scaling_factor
 
@@ -41,7 +43,7 @@ def ddpm_inpaint(
         prompt,
         device,
         num_images_per_prompt=1,
-        do_classifier_free_guidance=True,
+        do_classifier_free_guidance=True
     )
     text_embeddings = torch.cat([negative_prompt_embeds, prompt_embeds])
 

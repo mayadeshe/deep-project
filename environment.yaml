@@ -5,8 +5,8 @@ channels:
   - defaults
 dependencies:
   - python=3.10
-  - pytorch=2.2.0
-  - torchvision=0.17.0
+  - pytorch=2.10.0
+  - torchvision=0.25.0
   - numpy=1.26.2
   - pillow=10.1.0
   - matplotlib

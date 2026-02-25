@@ -2,14 +2,13 @@ import argparse
 import os
 import torch
 from PIL import Image
-from torchvision.transforms.functional import gaussian_blur
 
 from cliutils import preprocess_inputs, load_sd_pipeline
 
 
 # ---------------------------------------------------------
 # Improved DDPM inpainting sampler
-# Adds: RePaint resampling + Gaussian soft mask blending
+# Adds: RePaint resampling + negative prompt CFG
 # ---------------------------------------------------------
 
 @torch.no_grad()
@@ -22,8 +21,6 @@ def ddpm_inpaint_improved(
         guidance_scale: float,
         seed: int,
         resample_steps: int,
-        blur_sigma: float,
-        blur_kernel: int,
 ) -> Image.Image:
 
     device = pipe.device
@@ -38,23 +35,22 @@ def ddpm_inpaint_improved(
     known_latents = pipe.vae.encode(image_tensor).latent_dist.sample(generator)
     known_latents *= pipe.vae.config.scaling_factor
 
-    # Soft mask: add gaussian blur in pixel space
-    if blur_kernel > 1 and blur_sigma > 0.0:
-        mask = gaussian_blur(mask, kernel_size=[blur_kernel], sigma=[blur_sigma])
-
-    # Downsample mask to latent resolution
+    # Downsample mask to latent resolution for diffusion loop
     mask = torch.nn.functional.interpolate(mask, size=known_latents.shape[2:], mode="bilinear", align_corners=False)
 
     # Initial pure noise
     latents = torch.randn(known_latents.shape, generator=generator, device=device, dtype=known_latents.dtype)
 
     # Text embeddings
+    negative_prompt = "blurry, low quality, artifacts, seam, border, distorted, ugly, watermark"
     prompt_embeds, negative_prompt_embeds = pipe.encode_prompt(
         prompt,
         device,
         num_images_per_prompt=1,
         do_classifier_free_guidance=True,
+        negative_prompt=negative_prompt,
     )
+
     text_embeddings = torch.cat([negative_prompt_embeds, prompt_embeds])
 
     pipe.scheduler.set_timesteps(steps)
@@ -74,8 +70,8 @@ def ddpm_inpaint_improved(
             # Predict noise
             latent_input = torch.cat([latents] * 2)
             noise_pred = pipe.unet(latent_input, t, encoder_hidden_states=text_embeddings).sample
-            noise_uncond, noise_text = noise_pred.chunk(2)
-            noise_pred = noise_uncond + guidance_scale * (noise_text - noise_uncond)
+            noise_neg, noise_text = noise_pred.chunk(2)
+            noise_pred = noise_neg + guidance_scale * (noise_text - noise_neg)
 
             # Reverse sample
             latents = pipe.scheduler.step(noise_pred, t, latents).prev_sample
@@ -96,10 +92,10 @@ def ddpm_inpaint_improved(
 
     latents = (mask * known_latents) + ((1 - mask) * latents)
 
-    # Decode the latents
+    # Decode
     latents /= pipe.vae.config.scaling_factor
-    image = pipe.vae.decode(latents).sample
-    image = pipe.image_processor.postprocess(image)[0]
+    decoded = pipe.vae.decode(latents).sample
+    image = pipe.image_processor.postprocess(decoded)[0]
 
     return image
 
@@ -107,15 +103,8 @@ def ddpm_inpaint_improved(
 # ---------------------------------------------------------
 # CLI SCRIPT
 # ---------------------------------------------------------
-def odd_kernel(value):
-    k = int(value)
-    if k % 2 == 0:
-        raise argparse.ArgumentTypeError(f"--blur-kernel must be odd, got {k}")
-    return k
-
-
 def main():
-    parser = argparse.ArgumentParser("Improved DDPM Inpainting (RePaint + soft mask)")
+    parser = argparse.ArgumentParser("Improved DDPM Inpainting (RePaint + negative prompt)")
     parser.add_argument("--image", required=True)
     parser.add_argument("--mask", required=True)
     parser.add_argument("--prompt", required=True)
@@ -125,10 +114,6 @@ def main():
     parser.add_argument("--seed", type=int, default=42)
     parser.add_argument("--resample-steps", type=int, default=10,
                         help="RePaint resampling iterations per timestep (r). Default: 10.")
-    parser.add_argument("--blur-sigma", type=float, default=1.5,
-                        help="Gaussian sigma for soft latent mask blending. Default: 1.5.")
-    parser.add_argument("--blur-kernel", type=odd_kernel, default=7,
-                        help="Gaussian kernel size (must be odd). Default: 7.")
     args = parser.parse_args()
 
     os.makedirs(args.output_dir, exist_ok=True)
@@ -142,8 +127,7 @@ def main():
     print("Preprocessing inputs...")
     image, mask = preprocess_inputs(args.image, args.mask)
 
-    print(f"Running improved DDPM inpainting (resample_steps={args.resample_steps}, "
-          f"blur_sigma={args.blur_sigma}, blur_kernel={args.blur_kernel})...")
+    print(f"Running improved DDPM inpainting (resample_steps={args.resample_steps})...")
     result = ddpm_inpaint_improved(
         pipe=pipe,
         image=image,
@@ -153,8 +137,6 @@ def main():
         guidance_scale=args.guidance_scale,
         seed=args.seed,
         resample_steps=args.resample_steps,
-        blur_sigma=args.blur_sigma,
-        blur_kernel=args.blur_kernel,
     )
 
     out_path = os.path.join(args.output_dir, f"inpaint_seed{args.seed}.png")

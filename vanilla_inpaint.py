@@ -3,7 +3,7 @@ import os
 import torch
 from PIL import Image
 
-from cliutils import preprocess_inputs, load_sd_pipeline
+from utils.cli import preprocess_inputs, load_sd_pipeline
 
 
 # ---------------------------------------------------------

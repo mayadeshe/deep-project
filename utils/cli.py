@@ -1,5 +1,5 @@
 """
-cliutils.py — Shared utilities for all inpainting pipelines.
+cli.py — Shared utilities for all inpainting pipelines.
 
 Provides:
   - preprocess_inputs()      Load + resize image and mask

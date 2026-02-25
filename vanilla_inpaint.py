@@ -3,7 +3,7 @@ import os
 import torch
 from PIL import Image
 
-from pipeutils import preprocess_inputs, load_sd_pipeline
+from cliutils import preprocess_inputs, load_sd_pipeline
 
 
 # ---------------------------------------------------------
@@ -64,11 +64,6 @@ def ddpm_inpaint(
 
         # Reverse sample
         latents = pipe.scheduler.step(noise_pred, t, latents).prev_sample
-
-        # Clamp again at noise level t-1
-        noise = torch.randn(known_latents.shape, generator=generator, device=device, dtype=known_latents.dtype)
-        noisy_known = pipe.scheduler.add_noise(known_latents, noise, t-1)
-        latents = (mask * noisy_known) + ((1 - mask) * latents)
 
     latents = (mask * known_latents) + ((1 - mask) * latents)
 

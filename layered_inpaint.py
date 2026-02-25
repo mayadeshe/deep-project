@@ -5,7 +5,7 @@ import numpy as np
 import scipy.ndimage as ndi
 from PIL import Image
 
-from pipeutils import preprocess_inputs, load_sd_pipeline
+from cliutils import preprocess_inputs, load_sd_pipeline
 
 
 @torch.no_grad()
@@ -26,7 +26,7 @@ def layered_ddpm_inpaint(
     image_tensor = pipe.image_processor.preprocess(image).to(device)
     mask = mask.to(device)
 
-    # Mask out the inpaint region before encoding so the VAE never sees those pixels
+    # # Mask out the inpaint region before encoding so the VAE never sees those pixels
     image_tensor = image_tensor * mask
 
     # Encode image to latent
@@ -84,7 +84,8 @@ def layered_ddpm_inpaint(
         timesteps = pipe.scheduler.timesteps
 
         for t in timesteps:
-            # Composite known region at noise level t (before UNet step)
+
+            # Clamp known region at noise level t
             noise = torch.randn(known_latents.shape, generator=generator, device=device, dtype=known_latents.dtype)
             noisy_known = pipe.scheduler.add_noise(known_latents, noise, t)
             effective_mask = torch.clamp(completed_mask, 0.0, 1.0)
@@ -97,14 +98,11 @@ def layered_ddpm_inpaint(
 
             latents = pipe.scheduler.step(noise_pred, t, latents).prev_sample
 
-            # Composite known region at noise level t-1 (after UNet step)
-            noise = torch.randn(known_latents.shape, generator=generator, device=device, dtype=known_latents.dtype)
-            noisy_known = pipe.scheduler.add_noise(known_latents, noise, t - 1)
-            latents = effective_mask * noisy_known + (1 - effective_mask) * latents
-
         # Absorb completed layer into known_latents so inner layers treat it as context
         known_latents = completed_mask * known_latents + layer_mask * latents
         completed_mask = torch.clamp(completed_mask + layer_mask, 0.0, 1.0)
+
+    latents = (mask * known_latents) + ((1 - mask) * latents)
 
     latents /= pipe.vae.config.scaling_factor
     out_image = pipe.vae.decode(latents).sample

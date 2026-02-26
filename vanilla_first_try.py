@@ -1,86 +1,120 @@
 import argparse
-import torch
 import os
+import torch
 from PIL import Image
-from diffusers import StableDiffusionInpaintPipeline
 
-def load_model(device: str) -> StableDiffusionInpaintPipeline:
-    """Load StableDiffusion 2 base into an inpainting pipeline."""
-    model_id = "sd2-community/stable-diffusion-2-base"
+from cliutils import preprocess_inputs, load_sd_pipeline
 
-    pipe = StableDiffusionInpaintPipeline.from_pretrained(
-        model_id,
-        torch_dtype=torch.float32,
-        use_auth_token=True,
-        safety_checker=None,
+
+# ---------------------------------------------------------
+# Vanilla DDPM inpainting sampler
+# --------------------------------------------------------
+
+@torch.no_grad()
+def ddpm_inpaint(
+        pipe,
+        image: Image.Image,
+        mask: torch.Tensor,
+        prompt: str,
+        steps: int,
+        guidance_scale: float,
+        seed: int,
+):
+    device = pipe.device
+    generator = torch.Generator(device).manual_seed(seed)
+
+    #Prepare masked image
+    image_tensor = pipe.image_processor.preprocess(image).to(device)
+    mask = mask.to(device)
+    image_tensor = image_tensor * mask
+
+    #Encode
+    known_latents = pipe.vae.encode(image_tensor).latent_dist.sample(generator)
+    known_latents *= pipe.vae.config.scaling_factor
+
+    # Downsample mask to latent resolution
+    mask = torch.nn.functional.interpolate(mask, size=known_latents.shape[2:], mode="nearest")
+
+    # Initial pure noise for the very first step
+    latents = torch.randn(known_latents.shape, generator=generator, device=device, dtype=known_latents.dtype)
+
+    # Text embeddings
+    prompt_embeds, negative_prompt_embeds = pipe.encode_prompt(
+        prompt,
+        device,
+        num_images_per_prompt=1,
+        do_classifier_free_guidance=True
     )
-    print(pipe)
-    pipe = pipe.to(device)
-    return pipe
+    text_embeddings = torch.cat([negative_prompt_embeds, prompt_embeds])
 
-def preprocess_inputs(image_path: str, mask_path: str, target_size=(512, 512)):
-    image = Image.open(image_path).convert("RGB")
-    mask = Image.open(mask_path).convert("L")
+    pipe.scheduler.set_timesteps(steps)
 
-    image = image.resize(target_size, Image.LANCZOS)
-    mask = mask.resize(target_size, Image.NEAREST)
+    for t in pipe.scheduler.timesteps:
 
-    mask_rgb = mask.convert("RGB")
-    return image, mask_rgb
+        # Clamp known region at noise level t
+        noise = torch.randn(known_latents.shape, generator=generator, device=device, dtype=known_latents.dtype)
+        noisy_known = pipe.scheduler.add_noise(known_latents, noise, t)
+        latents = (mask * noisy_known) + ((1 - mask) * latents)
 
-def run_inpainting(
-    pipe: StableDiffusionInpaintPipeline,
-    image: Image.Image,
-    mask: Image.Image,
-    prompt: str,
-    seed: int,
-    steps: int,
-    guidance_scale: float,
-) -> Image.Image:
-    generator = torch.Generator(device=pipe.device).manual_seed(seed)
+        # Predict noise
+        latent_input = torch.cat([latents] * 2)
+        noise_pred = pipe.unet(latent_input, t, encoder_hidden_states=text_embeddings).sample
+        noise_uncond, noise_text = noise_pred.chunk(2)
+        noise_pred = noise_uncond + guidance_scale * (noise_text - noise_uncond)
 
-    result = pipe(
-        prompt=prompt,
-        image=image,
-        mask_image=mask,
-        num_inference_steps=steps,
-        guidance_scale=guidance_scale,
-        generator=generator,
-    )
-    return result.images[0]
+        # Reverse sample
+        latents = pipe.scheduler.step(noise_pred, t, latents).prev_sample
 
+    latents = (mask * known_latents) + ((1 - mask) * latents)
+
+    # Decode the latents
+    latents /= pipe.vae.config.scaling_factor
+    image = pipe.vae.decode(latents).sample
+    image = pipe.image_processor.postprocess(image)[0]
+
+    return image
+
+
+# ---------------------------------------------------------
+# CLI SCRIPT
+# ---------------------------------------------------------
 def main():
-    parser = argparse.ArgumentParser(description="Inpainting with SD2 Base")
+    parser = argparse.ArgumentParser("Vanilla DDPM Inpainting")
     parser.add_argument("--image", required=True)
     parser.add_argument("--mask", required=True)
     parser.add_argument("--prompt", required=True)
-    parser.add_argument("--output_dir", default="output_vanila")
-    parser.add_argument("--seed", type=int, default=42)
+    parser.add_argument("--output_dir", default="output_ddpm")
     parser.add_argument("--steps", type=int, default=50)
-    parser.add_argument("--guidance-scale", type=float, default=7.5)
+    parser.add_argument("--guidance_scale", type=float, default=7.5)
+    parser.add_argument("--seed", type=int, default=42)
     args = parser.parse_args()
 
-    clean_prompt = "".join([c if c.isalnum() else "_" for c in args.prompt])
-    filename = f"{clean_prompt[:50]}_seed{args.seed}.png"
-    full_output_path = os.path.join(args.output_dir, filename)
-
-    if not os.path.exists(args.output_dir):
-        os.makedirs(args.output_dir)
+    os.makedirs(args.output_dir, exist_ok=True)
 
     device = "mps" if torch.backends.mps.is_available() else "cpu"
     print(f"Using device: {device}")
 
-    print("Loading model...")
-    pipe = load_model(device)
+    print("Loading vanilla diffusion model...")
+    pipe = load_sd_pipeline(device)
 
     print("Preprocessing inputs...")
     image, mask = preprocess_inputs(args.image, args.mask)
 
-    print(f"Running inpainting for prompt: '{args.prompt}'")
-    result = run_inpainting(pipe, image, mask, args.prompt, args.seed, args.steps, args.guidance_scale)
+    print("Running DDPM inpainting...")
+    result = ddpm_inpaint(
+        pipe=pipe,
+        image=image,
+        mask=mask,
+        prompt=args.prompt,
+        steps=args.steps,
+        guidance_scale=args.guidance_scale,
+        seed=args.seed,
+    )
 
-    result.save(full_output_path)
-    print(f"Saved result to: {full_output_path}")
+    out_path = os.path.join(args.output_dir, f"inpaint_seed{args.seed}.png")
+    result.save(out_path)
+    print(f"Saved result to: {out_path}")
+
 
 if __name__ == "__main__":
     main()

@@ -8,10 +8,10 @@ import numpy as np
 import torchvision
 from tqdm.auto import tqdm
 
-EXCLUDED_SUPERCATEGORIES = {"person", "animal", "sports", "food"}
+IMG_URL  = "http://images.cocodataset.org/zips/val2017.zip"
+ANN_URL  = "http://images.cocodataset.org/annotations/annotations_trainval2017.zip"
 
-IMG_URL = "http://images.cocodataset.org/zips/val2017.zip"
-ANN_URL = "http://images.cocodataset.org/annotations/annotations_trainval2017.zip"
+_EXCLUDE_SUPERCATS = {"person", "animal"}
 
 _pbar = None
 
@@ -43,7 +43,6 @@ def load_data(data_root, seed=42, n_images=1000):
     coco_root    = Path(data_root) / "coco"
     coco_img_dir = coco_root / "val2017"
     ann_file     = coco_root / "annotations" / "captions_val2017.json"
-    inst_file    = coco_root / "annotations" / "instances_val2017.json"
 
     coco_root.mkdir(parents=True, exist_ok=True)
 
@@ -82,30 +81,26 @@ def load_data(data_root, seed=42, n_images=1000):
     for ann in coco_data["annotations"]:
         captions.setdefault(ann["image_id"], []).append(ann["caption"])
 
-    # ---- Exclude noisy supercategories ----
+    # ---- Build exclusion set: images containing people or animals ----
+    inst_file = coco_root / "annotations" / "instances_val2017.json"
     with open(inst_file, "r") as f:
         inst_data = json.load(f)
-
-    excluded_cat_ids = {
+    exclude_cat_ids = {
         c["id"] for c in inst_data["categories"]
-        if c["supercategory"] in EXCLUDED_SUPERCATEGORIES
+        if c["supercategory"] in _EXCLUDE_SUPERCATS
     }
     excluded_image_ids = {
-        a["image_id"] for a in inst_data["annotations"]
-        if a["category_id"] in excluded_cat_ids
+        ann["image_id"] for ann in inst_data["annotations"]
+        if ann["category_id"] in exclude_cat_ids
     }
-    print(
-        f"Images excluded (person/animal/sports/food): "
-        f"{len(excluded_image_ids)} / {len(id_to_filename)}"
-    )
 
     # ---- Filter to valid IDs ----
     valid_ids = [
         img_id for img_id, caps in captions.items()
-        if img_id not in excluded_image_ids
-        and (coco_img_dir / id_to_filename[img_id]).exists()
+        if (coco_img_dir / id_to_filename[img_id]).exists()
+        and img_id not in excluded_image_ids
     ]
-    print(f"Scene/room/nature/vehicle images remaining: {len(valid_ids)}")
+    print(f"Valid images (excluding people/animals): {len(valid_ids)}")
 
     # ---- Deterministic sampling ----
     rng = np.random.RandomState(seed)
@@ -116,5 +111,5 @@ def load_data(data_root, seed=42, n_images=1000):
     mnist_indices = rng.choice(len(mnist), size=n_images, replace=False)
 
     print(f"MNIST dataset size: {len(mnist)}")
-    print(f"Sampled {n_images} scene/room/nature/vehicle image-mask pairs.")
+    print(f"Sampled {n_images} image-mask pairs.")
     return selected_ids, id_to_filename, captions, mnist, mnist_indices

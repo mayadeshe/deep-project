@@ -8,20 +8,20 @@ from utils.cli import preprocess_inputs, load_sd_pipeline
 
 # ---------------------------------------------------------
 # Improved DDPM inpainting sampler
-# Adds: RePaint resampling + negative prompt CFG
+# Adds: RePaint resampling + negative prompt CFG + mask downsampling in bilinear mode
 # ---------------------------------------------------------
 
 @torch.no_grad()
 def ddpm_inpaint_improved(
         pipe,
-        image: Image.Image,
-        mask: torch.Tensor,
-        prompt: str,
-        steps: int,
-        guidance_scale: float,
-        seed: int,
-        resample_steps: int,
-) -> Image.Image:
+        image,
+        mask,
+        prompt,
+        steps,
+        guidance_scale,
+        seed,
+        resample_steps,
+):
 
     device = pipe.device
     generator = torch.Generator(device).manual_seed(seed)
@@ -103,8 +103,9 @@ def ddpm_inpaint_improved(
 # ---------------------------------------------------------
 # CLI SCRIPT
 # ---------------------------------------------------------
+
 def main():
-    parser = argparse.ArgumentParser("Improved DDPM Inpainting (RePaint + negative prompt)")
+    parser = argparse.ArgumentParser("Improved DDPM Inpainting")
     parser.add_argument("--image", required=True)
     parser.add_argument("--mask", required=True)
     parser.add_argument("--prompt", required=True)
@@ -112,8 +113,8 @@ def main():
     parser.add_argument("--steps", type=int, default=50)
     parser.add_argument("--guidance_scale", type=float, default=7.5)
     parser.add_argument("--seed", type=int, default=42)
-    parser.add_argument("--resample-steps", type=int, default=10,
-                        help="RePaint resampling iterations per timestep (r). Default: 10.")
+    parser.add_argument("--resample-steps", type=int, default=5,
+                        help="RePaint resampling iterations per timestep (r). Default: 5.")
     args = parser.parse_args()
 
     os.makedirs(args.output_dir, exist_ok=True)

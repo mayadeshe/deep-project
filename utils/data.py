@@ -29,24 +29,12 @@ def _reporthook(block_num, block_size, total_size):
 
 
 def load_data(data_root, seed=42, n_images=1000):
-    """
-    Download (if needed) and load COCO val2017 + MNIST test data.
-
-    Returns
-    -------
-    selected_ids    : list[int]  — sampled COCO image IDs (length n_images)
-    id_to_filename  : dict[int, str]
-    captions        : dict[int, list[str]]
-    mnist_dataset   : torchvision.datasets.MNIST
-    mnist_indices   : np.ndarray — sampled test indices (length n_images)
-    """
     coco_root    = Path(data_root) / "coco"
     coco_img_dir = coco_root / "val2017"
     ann_file     = coco_root / "annotations" / "captions_val2017.json"
 
     coco_root.mkdir(parents=True, exist_ok=True)
 
-    # ---- Download images ----
     if not coco_img_dir.is_dir():
         img_zip = coco_root / "val2017.zip"
         print("Downloading COCO val2017 images (~1 GB)...")
@@ -59,7 +47,6 @@ def load_data(data_root, seed=42, n_images=1000):
     else:
         print(f"COCO images already present: {coco_img_dir}")
 
-    # ---- Download annotations ----
     if not ann_file.exists():
         ann_zip = coco_root / "annotations_trainval2017.zip"
         print("Downloading COCO annotations (~240 MB)...")
@@ -72,16 +59,14 @@ def load_data(data_root, seed=42, n_images=1000):
     else:
         print(f"COCO annotations already present: {ann_file}")
 
-    # ---- Build ID → filename and ID → captions mappings ----
     with open(ann_file, "r") as f:
         coco_data = json.load(f)
 
     id_to_filename = {img["id"]: img["file_name"] for img in coco_data["images"]}
-    captions: dict = {}
+    captions = {}
     for ann in coco_data["annotations"]:
         captions.setdefault(ann["image_id"], []).append(ann["caption"])
 
-    # ---- Build exclusion set: images containing people or animals ----
     inst_file = coco_root / "annotations" / "instances_val2017.json"
     with open(inst_file, "r") as f:
         inst_data = json.load(f)
@@ -94,7 +79,6 @@ def load_data(data_root, seed=42, n_images=1000):
         if ann["category_id"] in exclude_cat_ids
     }
 
-    # ---- Filter to valid IDs ----
     valid_ids = [
         img_id for img_id, caps in captions.items()
         if (coco_img_dir / id_to_filename[img_id]).exists()
@@ -102,11 +86,9 @@ def load_data(data_root, seed=42, n_images=1000):
     ]
     print(f"Valid images (excluding people/animals): {len(valid_ids)}")
 
-    # ---- Deterministic sampling ----
     rng = np.random.RandomState(seed)
     selected_ids = rng.choice(valid_ids, size=n_images, replace=False).tolist()
 
-    # ---- MNIST test set ----
     mnist = torchvision.datasets.MNIST(root=str(data_root), train=False, download=True)
     mnist_indices = rng.choice(len(mnist), size=n_images, replace=False)
 

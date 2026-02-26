@@ -1,7 +1,6 @@
 import argparse
 import os
 import torch
-from PIL import Image
 
 from utils.cli import preprocess_inputs, load_sd_pipeline
 
@@ -13,12 +12,12 @@ from utils.cli import preprocess_inputs, load_sd_pipeline
 @torch.no_grad()
 def ddpm_inpaint(
         pipe,
-        image: Image.Image,
-        mask: torch.Tensor,
-        prompt: str,
-        steps: int,
-        guidance_scale: float,
-        seed: int,
+        image,
+        mask,
+        prompt,
+        steps,
+        guidance_scale,
+        seed,
 ):
     device = pipe.device
     generator = torch.Generator(device).manual_seed(seed)
@@ -78,6 +77,7 @@ def ddpm_inpaint(
 # ---------------------------------------------------------
 # CLI SCRIPT
 # ---------------------------------------------------------
+
 def main():
     parser = argparse.ArgumentParser("Vanilla DDPM Inpainting")
     parser.add_argument("--image", required=True)

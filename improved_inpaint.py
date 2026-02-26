@@ -1,6 +1,8 @@
 import argparse
+import math
 import os
 import torch
+import torch.nn.functional as F
 from PIL import Image
 
 from utils.cli import preprocess_inputs, load_sd_pipeline
@@ -8,7 +10,7 @@ from utils.cli import preprocess_inputs, load_sd_pipeline
 
 # ---------------------------------------------------------
 # Improved DDPM inpainting sampler
-# Adds: RePaint resampling + negative prompt CFG + mask downsampling in bilinear mode
+# Adds: RePaint resampling + negative prompt CFG + TrigoBlend with SoftMask
 # ---------------------------------------------------------
 
 @torch.no_grad()
@@ -35,8 +37,11 @@ def ddpm_inpaint_improved(
     known_latents = pipe.vae.encode(image_tensor).latent_dist.sample(generator)
     known_latents *= pipe.vae.config.scaling_factor
 
-    # Downsample mask to latent resolution for diffusion loop
+    # Downsample mask to latent resolution for diffusion loop and to trigo points for trigo blend
     mask = torch.nn.functional.interpolate(mask, size=known_latents.shape[2:], mode="bilinear", align_corners=False)
+    theta = mask * (math.pi / 2.0)
+    mask_sin = torch.sin(theta)
+    mask_cos = torch.cos(theta)
 
     # Initial pure noise
     latents = torch.randn(known_latents.shape, generator=generator, device=device, dtype=known_latents.dtype)
@@ -65,7 +70,7 @@ def ddpm_inpaint_improved(
             # Clamp known region at noise level t
             noise = torch.randn(known_latents.shape, generator=generator, device=device, dtype=known_latents.dtype)
             noisy_known = pipe.scheduler.add_noise(known_latents, noise, t)
-            latents = (mask * noisy_known) + ((1 - mask) * latents)
+            latents = (mask_sin * noisy_known) + (mask_cos * latents)
 
             # Predict noise
             latent_input = torch.cat([latents] * 2)
@@ -90,9 +95,8 @@ def ddpm_inpaint_improved(
                 # noise back the latents
                 latents = torch.sqrt(1 - effective_beta) * latents + torch.sqrt(effective_beta) * jump_noise
 
-    latents = (mask * known_latents) + ((1 - mask) * latents)
+    latents = (mask_sin * known_latents) + (mask_cos * latents) # Decode
 
-    # Decode
     latents /= pipe.vae.config.scaling_factor
     decoded = pipe.vae.decode(latents).sample
     image = pipe.image_processor.postprocess(decoded)[0]

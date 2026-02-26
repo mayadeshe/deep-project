@@ -12,41 +12,19 @@ from utils.cli import preprocess_inputs, load_sd_pipeline
 # Mask schedule builder
 # ---------------------------------------------------------
 
-def build_mask_schedule(
-        mask_hr: torch.Tensor,
-        steps: int,
-        max_radius: int,
-        decay_steps: int,
-) -> list:
-    """Pre-compute one 64x64 dilated mask tensor per timestep.
-
-    At timestep index i (0 = noisiest, steps-1 = cleanest):
-        R_i = max_radius * 0.5 * (1 + cos(pi * i / decay_steps))  if i <= decay_steps
-        R_i = 0                                                      otherwise
-
-    Dilation (expanding the hole = eroding the keep region):
-        M_dilated = 1 - max_pool2d(1 - M_HR, kernel_size=2*R+1, padding=R)
-
-    The result is bilinearly downsampled to 64x64 latent resolution.
-    """
+def build_mask_schedule(mask_hr, steps, max_radius, decay_steps):
     schedule = []
     for i in range(steps):
-        if i <= decay_steps:
-            R = int(round(max_radius * 0.5 * (1 + math.cos(math.pi * i / decay_steps))))
-        else:
-            R = 0
+        R = int(round(max_radius * 0.5 * (1 + math.cos(math.pi * i / decay_steps)))) if i <= decay_steps else 0
 
-        if R > 0:
-            k = 2 * R + 1
-            # Erode the keep-mask (expand the hole)
-            dilated_hr = 1.0 - F.max_pool2d(1.0 - mask_hr, kernel_size=k, stride=1, padding=R)
-        else:
-            dilated_hr = mask_hr.clone()
+        # Dilation (Erode the keep region)
+        k = 2 * R + 1
+        m = 1.0 - F.max_pool2d(1.0 - mask_hr, kernel_size=k, stride=1, padding=R) if R > 0 else mask_hr.clone()
 
-        # Downsample to latent resolution
-        dilated_latent = F.interpolate(dilated_hr, size=(64, 64), mode="bilinear", align_corners=False)
-        schedule.append(dilated_latent)
+        # Downsample to Latent (64x64)
+        m_latent = F.interpolate(m, size=(64, 64), mode="bilinear", align_corners=False)
 
+        schedule.append(m_latent)
     return schedule
 
 
@@ -155,8 +133,8 @@ def main():
     parser.add_argument("--seed", type=int, default=42)
     parser.add_argument("--max-radius", type=int, default=10,
                         help="Maximum dilation radius in pixel space (512x512). Default: 10.")
-    parser.add_argument("--decay-steps", type=int, default=35,
-                        help="Number of timesteps over which the dilation decays to zero. Default: 35.")
+    parser.add_argument("--decay-steps", type=int, default=25,
+                        help="Number of timesteps over which the dilation decays to zero. Default: 25.")
     args = parser.parse_args()
 
     os.makedirs(args.output_dir, exist_ok=True)

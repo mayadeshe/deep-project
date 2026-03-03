@@ -10,7 +10,6 @@ from utils.image import apply_mask_for_display
 
 
 def print_stats_table(results, label=""):
-    """Print Mean / Median / Std for SSIM, PSNR, LPIPS."""
     ssim_v  = np.array([r["ssim"]  for r in results])
     psnr_v  = np.array([r["psnr"]  for r in results])
     lpips_v = np.array([r["lpips"] for r in results])
@@ -29,7 +28,6 @@ def print_stats_table(results, label=""):
 
 
 def plot_kde_single(results, out_path, title="Inpainting — Metric Distributions"):
-    """KDE distributions for SSIM / PSNR / LPIPS for one method. Saves PNG."""
     ssim_v  = np.array([r["ssim"]  for r in results])
     psnr_v  = np.array([r["psnr"]  for r in results])
     lpips_v = np.array([r["lpips"] for r in results])
@@ -63,7 +61,6 @@ def plot_kde_single(results, out_path, title="Inpainting — Metric Distribution
 
 def plot_kde_overlay(results_a, results_b, label_a, label_b, out_path,
                      color_a="steelblue", color_b="darkorange"):
-    """Overlaid KDE for two methods side-by-side. Saves PNG."""
     def _get_arrays(results):
         return (
             np.array([r["ssim"]  for r in results]),
@@ -111,19 +108,6 @@ def plot_kde_overlay(results_a, results_b, label_a, label_b, out_path,
 
 def show_top10(results, inpainted_dir=None, originals_dir=None, masks_dir=None,
                sort_by="ssim", ascending=True, out_path=None):
-    """
-    10×3 grid: Original | Masked | Inpainted.
-
-    If inpainted_dir / originals_dir / masks_dir are provided the images are
-    loaded from disk; otherwise they are taken from the ``results`` dicts
-    (which store PIL images directly when produced by run_metrics()).
-
-    Parameters
-    ----------
-    sort_by   : metric key to sort by ("ssim", "psnr", "lpips")
-    ascending : True → worst first (lowest SSIM), False → best first
-    out_path  : if given, saves the figure as PNG
-    """
     sorted_r = sorted(results, key=lambda r: r[sort_by], reverse=not ascending)
     top10 = sorted_r[:10]
 

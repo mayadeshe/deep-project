@@ -1,11 +1,3 @@
-"""
-cli.py — Shared utilities for all inpainting pipelines.
-
-Provides:
-  - preprocess_inputs()      Load + resize image and mask
-  - load_sd_pipeline()       StableDiffusionPipeline + DDPMScheduler
-"""
-
 import numpy as np
 import torch
 from PIL import Image
@@ -15,15 +7,7 @@ from diffusers.schedulers import DDPMScheduler
 
 MODEL_ID = "sd2-community/stable-diffusion-2-base"
 
-def preprocess_inputs(image_path: str, mask_path: str, size=(512, 512)):
-    """
-    Load and resize an image and its mask.
-
-    Returns:
-        image:  PIL RGB image at `size`
-        mask:   (1, 1, H, W) float32 tensor — 1 = keep, 0 = inpaint
-                Accepts both .pt tensors and standard image files.
-    """
+def preprocess_inputs(image_path, mask_path, size=(512, 512)):
     image = Image.open(image_path).convert("RGB").resize(size, Image.LANCZOS)
     if mask_path.endswith(".pt"):
         mask_tensor = torch.load(mask_path, map_location="cpu").float()
@@ -41,11 +25,7 @@ def preprocess_inputs(image_path: str, mask_path: str, size=(512, 512)):
     return image, mask
 
 
-def load_sd_pipeline(device: str) -> StableDiffusionPipeline:
-    """
-    StableDiffusionPipeline with DDPMScheduler.
-    Used by vanilla_inpaint, layered_inpaint, and layered_improved_inpaint.
-    """
+def load_sd_pipeline(device):
     pipe = StableDiffusionPipeline.from_pretrained(
         MODEL_ID,
         torch_dtype=torch.float32,

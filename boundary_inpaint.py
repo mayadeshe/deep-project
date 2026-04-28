@@ -1,4 +1,5 @@
 import argparse
+import math
 import os
 import numpy as np
 import torch
@@ -86,6 +87,11 @@ def ddpm_inpaint_boundary(
         align_corners=False,
     )
 
+    # Trigo blend: convert soft strength to sin/cos for energy-preserving blending
+    theta = soft_strength_lat * mask_lat * (math.pi / 2.0)
+    blend_sin = torch.sin(theta)
+    blend_cos = torch.cos(theta)
+
     # Initial pure noise
     latents = torch.randn(
         known_latents.shape,
@@ -117,8 +123,8 @@ def ddpm_inpaint_boundary(
         )
         noisy_known = pipe.scheduler.add_noise(known_latents, noise, t)
 
-        # Soft boundary blend: strength tapers to 0 near mask edges
-        latents = latents + soft_strength_lat * mask_lat * (noisy_known - latents)
+        # Trigo boundary blend: sin/cos tapers near mask edges
+        latents = (blend_sin * noisy_known) + (blend_cos * latents)
 
         # Predict noise (CFG)
         latent_input = torch.cat([latents] * 2)
@@ -134,8 +140,8 @@ def ddpm_inpaint_boundary(
         # Reverse diffusion step
         latents = pipe.scheduler.step(noise_pred, t, latents).prev_sample
 
-    # Final soft composite toward clean known latents
-    latents = latents + soft_strength_lat * mask_lat * (known_latents - latents)
+    # Final trigo composite toward clean known latents
+    latents = (blend_sin * known_latents) + (blend_cos * latents)
 
     # Decode
     latents /= pipe.vae.config.scaling_factor

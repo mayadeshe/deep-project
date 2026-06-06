@@ -1,8 +1,6 @@
-import argparse
-import os
 import torch
 
-from utils.cli import preprocess_inputs, load_sd_pipeline
+from utils import run_inpaint_cli
 
 
 # ---------------------------------------------------------
@@ -74,47 +72,9 @@ def ddpm_inpaint(
     return image
 
 
-# ---------------------------------------------------------
-# CLI SCRIPT
-# ---------------------------------------------------------
-
-def main():
-    parser = argparse.ArgumentParser("Vanilla DDPM Inpainting")
-    parser.add_argument("--image", required=True)
-    parser.add_argument("--mask", required=True)
-    parser.add_argument("--prompt", required=True)
-    parser.add_argument("--output_dir", default="output_ddpm")
-    parser.add_argument("--steps", type=int, default=50)
-    parser.add_argument("--guidance_scale", type=float, default=7.5)
-    parser.add_argument("--seed", type=int, default=42)
-    args = parser.parse_args()
-
-    os.makedirs(args.output_dir, exist_ok=True)
-
-    device = "mps" if torch.backends.mps.is_available() else "cpu"
-    print(f"Using device: {device}")
-
-    print("Loading vanilla diffusion model...")
-    pipe = load_sd_pipeline(device)
-
-    print("Preprocessing inputs...")
-    image, mask = preprocess_inputs(args.image, args.mask)
-
-    print("Running DDPM inpainting...")
-    result = ddpm_inpaint(
-        pipe=pipe,
-        image=image,
-        mask=mask,
-        prompt=args.prompt,
-        steps=args.steps,
-        guidance_scale=args.guidance_scale,
-        seed=args.seed,
-    )
-
-    out_path = os.path.join(args.output_dir, f"inpaint_seed{args.seed}.png")
-    result.save(out_path)
-    print(f"Saved result to: {out_path}")
-
-
 if __name__ == "__main__":
-    main()
+    run_inpaint_cli(
+        "Vanilla DDPM Inpainting",
+        ddpm_inpaint,
+        default_output_dir="output_ddpm",
+    )

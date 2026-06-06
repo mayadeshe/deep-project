@@ -9,6 +9,16 @@ from scipy.ndimage import binary_dilation, sobel
 from skimage.metrics import structural_similarity as ssim_fn
 from tqdm.auto import tqdm
 
+# Each entry: (key, display_name, xlabel, precision, higher_is_better)
+METRIC_SPECS = [
+    ("ssim",                   "SSIM",           "SSIM",                                  ".4f", True),
+    ("psnr",                   "PSNR",           "PSNR (dB)",                             ".2f", True),
+    ("lpips",                  "LPIPS",          "LPIPS (lower=better)",                  ".4f", False),
+    ("seam_score",             "Seam Score",     "Boundary Discontinuity (lower=better)", ".4f", False),
+    ("color_distance",         "Color Distance", "Color Distance (lower=better)",         ".4f", False),
+    ("gradient_variance_diff", "Grad Var Diff",  "Gradient Variance Diff (lower=better)", ".4f", False),
+]
+
 _lpips_model = None
 
 def get_lpips_model(device="cpu"):
@@ -26,93 +36,70 @@ def compute_masked_metrics(original, inpainted, mask_tensor, device="cpu"):
     inp_np  = np.array(inpainted).astype(np.float64)
     mask_np = mask_tensor.squeeze().numpy()
     inpaint_mask = (mask_np == 0)
+    inpaint_mask_bool = inpaint_mask.astype(bool)
 
     if not inpaint_mask.any():
-        return {"ssim": 1.0, "psnr": float("inf"), "lpips": 0.0}
+        return {
+            "ssim": 1.0, "psnr": float("inf"), "lpips": 0.0,
+            "seam_score": 0.0, "color_distance": 0.0, "gradient_variance_diff": 0.0,
+        }
 
+    # Tight bounding box around the masked region (used by SSIM only)
     rows = np.any(inpaint_mask, axis=1)
     cols = np.any(inpaint_mask, axis=0)
     rmin, rmax = np.where(rows)[0][[0, -1]]
     cmin, cmax = np.where(cols)[0][[0, -1]]
-
     crop_orig = orig_np[rmin:rmax + 1, cmin:cmax + 1]
     crop_inp  = inp_np[rmin:rmax + 1, cmin:cmax + 1]
 
-    masked_orig = orig_np[inpaint_mask]
-    masked_inp  = inp_np[inpaint_mask]
+    # --- PSNR: masked pixels only, vs ground truth ---
+    masked_orig = orig_np[inpaint_mask_bool]
+    masked_inp  = inp_np[inpaint_mask_bool]
     mse = np.mean((masked_orig - masked_inp) ** 2)
     psnr_val = 10.0 * np.log10(255.0 ** 2 / mse) if mse > 0 else float("inf")
 
+    # --- SSIM: tight bbox crop, vs ground truth ---
     min_dim = min(crop_orig.shape[0], crop_orig.shape[1])
     win_size = min(7, min_dim if min_dim % 2 == 1 else min_dim - 1)
     win_size = max(win_size, 3)
-
     ssim_val = ssim_fn(
         crop_orig, crop_inp,
         data_range=255.0, channel_axis=2, win_size=win_size,
     )
 
-    crop_orig_f = crop_orig.astype(np.float32)
-    crop_inp_f  = crop_inp.astype(np.float32)
-
-    orig_t = torch.from_numpy(crop_orig_f).permute(2, 0, 1).unsqueeze(0) / 127.5 - 1.0
-    inp_t  = torch.from_numpy(crop_inp_f).permute(2, 0, 1).unsqueeze(0) / 127.5 - 1.0
-
+    # --- LPIPS: whole 512x512 image, vs ground truth ---
+    # Whole-image scope because the AlexNet/VGG receptive field demands more
+    # spatial context than a tight mask bbox can reliably provide.
+    orig_t = torch.from_numpy(orig_np.astype(np.float32)).permute(2, 0, 1).unsqueeze(0) / 127.5 - 1.0
+    inp_t  = torch.from_numpy(inp_np.astype(np.float32)).permute(2, 0, 1).unsqueeze(0) / 127.5 - 1.0
     lpips_model = get_lpips_model(device)
     with torch.no_grad():
         lpips_val = lpips_model(orig_t.to(device), inp_t.to(device)).item()
 
-    # --- Metric: Boundary Discontinuity (Seam Smoothness) ---
-    # Measures pixel intensity jump along the mask boundary (lower = smoother seam)
-    inpaint_mask_bool = inpaint_mask.astype(bool)
+    # --- Color Distance: per-pixel L2 RGB distance, vs ground truth, masked pixels only ---
+    # Matches the report formula  E_{p in H}[|| I_gen(p) - I_gt(p) ||_2].
+    diff = orig_np[inpaint_mask_bool] - inp_np[inpaint_mask_bool]   # shape (N, 3)
+    color_distance = float(np.mean(np.linalg.norm(diff, axis=1)))
+
+    # --- Grad Var Diff: |Var(grad I_gen) - Var(grad I_gt)| over masked pixels ---
+    # Sobel gradient magnitude on grayscale, evaluated only on masked pixels.
+    gray_inp  = inp_np.mean(axis=2)
+    gray_orig = orig_np.mean(axis=2)
+    gmag_inp  = np.sqrt(sobel(gray_inp,  axis=1) ** 2 + sobel(gray_inp,  axis=0) ** 2)
+    gmag_orig = np.sqrt(sobel(gray_orig, axis=1) ** 2 + sobel(gray_orig, axis=0) ** 2)
+    gradient_variance_diff = float(abs(
+        gmag_inp[inpaint_mask_bool].var() - gmag_orig[inpaint_mask_bool].var()
+    ))
+
+    # --- Seam Score: mean L1 grad magnitude on 2-pixel ring outside the mask ---
     dilated = binary_dilation(inpaint_mask_bool, iterations=2)
-    boundary_outside = dilated & ~inpaint_mask_bool  # pixels just outside mask
-    boundary_inside = inpaint_mask_bool & ~binary_dilation(~inpaint_mask_bool, iterations=2)  # pixels just inside mask
-    # Simpler approach: dilate mask edge and measure gradient magnitude there
-    edge_band = binary_dilation(inpaint_mask_bool, iterations=2) ^ binary_dilation(~inpaint_mask_bool, iterations=2) & inpaint_mask_bool
-    # Use the boundary between inside and outside
-    boundary_ring = dilated ^ inpaint_mask_bool  # 2px ring outside the mask
-    boundary_ring_inside = inpaint_mask_bool ^ binary_dilation(~inpaint_mask_bool.astype(bool), iterations=2).astype(bool) & inpaint_mask_bool
-
-    # Compute gradient magnitude on the inpainted image at the boundary
-    grad_x = np.abs(np.diff(inp_np.mean(axis=2), axis=1))
-    grad_y = np.abs(np.diff(inp_np.mean(axis=2), axis=0))
-    # Pad to original size
-    grad_mag = np.zeros_like(inp_np[:, :, 0])
-    grad_mag[:, :-1] += grad_x
-    grad_mag[:-1, :] += grad_y
-
-    # Boundary = 2px dilation minus the mask itself (ring just outside)
     boundary_mask = dilated & ~inpaint_mask_bool
-    if boundary_mask.any():
-        seam_score = grad_mag[boundary_mask].mean()
-    else:
-        seam_score = 0.0
-
-    # --- Metric: Lighting/Color Distance ---
-    # Mean color difference between inside and outside the mask (lower = better match)
-    if inpaint_mask_bool.any() and (~inpaint_mask_bool).any():
-        mean_inside = inp_np[inpaint_mask_bool].mean(axis=0)   # shape (3,)
-        mean_outside = inp_np[~inpaint_mask_bool].mean(axis=0)
-        color_distance = np.linalg.norm(mean_inside - mean_outside)
-    else:
-        color_distance = 0.0
-
-    # --- Metric: Gradient Variance (Texture Continuity) ---
-    # Compare gradient variance inside mask vs immediate surroundings (lower diff = better)
-    gray_inp = inp_np.mean(axis=2)
-    sobel_x = sobel(gray_inp, axis=1)
-    sobel_y = sobel(gray_inp, axis=0)
-    grad_magnitude = np.sqrt(sobel_x ** 2 + sobel_y ** 2)
-
-    # Surrounding band: dilate mask by 5px, subtract original mask
-    surround = binary_dilation(inpaint_mask_bool, iterations=5) & ~inpaint_mask_bool
-    if inpaint_mask_bool.any() and surround.any():
-        var_inside = grad_magnitude[inpaint_mask_bool].var()
-        var_surround = grad_magnitude[surround].var()
-        gradient_variance_diff = abs(var_inside - var_surround)
-    else:
-        gradient_variance_diff = 0.0
+    gx = np.abs(np.diff(inp_np.mean(axis=2), axis=1))
+    gy = np.abs(np.diff(inp_np.mean(axis=2), axis=0))
+    grad_mag = np.zeros_like(inp_np[:, :, 0])
+    grad_mag[:, :-1] += gx
+    grad_mag[:-1, :] += gy
+    seam_score = float(grad_mag[boundary_mask].mean()) if boundary_mask.any() else 0.0
 
     return {
         "ssim": ssim_val,
